@@ -45,7 +45,8 @@ async function cached(key: string, load: () => Promise<QlooResult>): Promise<Qlo
   return value;
 }
 
-// TODO(verify with real key): response field names below follow the docs; adjust after the first live call.
+// Verified 2026-10-22: /search returns results[] with `types[]`; /v2/insights returns results.entities[] with
+// `subtype`/`type` and query.affinity.
 function toEntities(json: unknown): QlooEntity[] {
   const j = json as { results?: { entities?: unknown[] } | unknown[] };
   const list = (Array.isArray(j.results) ? j.results : j.results?.entities) ?? [];
@@ -55,7 +56,7 @@ function toEntities(json: unknown): QlooEntity[] {
     return {
       id: String(e.entity_id ?? e.id ?? ""),
       name: String(e.name ?? ""),
-      type: e.subtype ? String(e.subtype) : e.type ? String(e.type) : undefined,
+      type: e.subtype ? String(e.subtype) : e.type ? String(e.type) : (e.types as string[] | undefined)?.[0],
       affinity: query?.affinity ?? (e.affinity as number | undefined),
       popularity: e.popularity as number | undefined,
       detail: props?.short_description ?? props?.description?.slice(0, 160),
@@ -88,7 +89,6 @@ export async function insights(args: InsightsArgs): Promise<QlooResult> {
     "feature.explainability": "true",
     take: String(args.take),
   };
-  // TODO(verify with real key): confirm the location parameter name in the Entity Type Parameter Guide.
   if (args.locationQuery) params["signal.location.query"] = args.locationQuery;
   return cached(`insights|${JSON.stringify(params)}`, async () => {
     const raw = await get("/v2/insights", params);
