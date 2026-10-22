@@ -178,6 +178,12 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
     },
   ];
 
+  const usage = { input: 0, output: 0, cacheRead: 0 };
+  const logUsage = (turns: number) => {
+    const usd = (usage.input * 4 + usage.cacheRead * 0.2 + usage.output * 20) / 1e6;
+    console.log(`[comps] ${turns} turns, in ${usage.input} (+${usage.cacheRead} cached), out ${usage.output}, ~$${usd.toFixed(3)}`);
+  };
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await client.beta.messages.create({
       model: MODEL,
@@ -191,12 +197,16 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
       messages,
     });
 
+    usage.input += response.usage.input_tokens;
+    usage.output += response.usage.output_tokens;
+    usage.cacheRead += response.usage.cache_read_input_tokens ?? 0;
     if (response.stop_reason === "refusal") throw new Error("The model declined this request.");
     messages.push({ role: "assistant", content: response.content });
 
     const calls = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
     const submit = calls.find((c) => c.name === "submit_plan");
     if (submit) {
+      logUsage(turn + 1);
       return { plan: Plan.parse(submit.input), trace, sample: !hasQlooKey() };
     }
     if (calls.length === 0) {
