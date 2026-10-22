@@ -71,8 +71,9 @@ export function Report({ result }: { result: PlanResult }) {
           title="Taste map"
           info={
             <>
-              Every book and author Qloo returned, by fit (up) and how mainstream it is (right). The best comps for a new author sit in the
-              shaded sweet spot. Orange triangles are the LLM-only guesses: they have no fit score at all. Hover any dot for details.
+              Every book and author Qloo returned, by fit (up) and how mainstream it is (right). They are all strong matches, so the best comps
+              for a new author sit in the shaded, less-crowded half. Orange triangles are the LLM-only guesses: they have no fit score at all.
+              Hover any dot for details.
             </>
           }
         />
@@ -355,7 +356,7 @@ function AdTargets({ plan }: { plan: Plan }) {
       <SectionHeader
         icon={<Target className="size-5" />}
         title="Amazon Ads targets"
-        info="Start with the high-priority targets in a Sponsored Products campaign with a modest daily budget, then add more as you see which ones convert."
+        info="Where to show your book's ads on Amazon: on other books' pages (title), when shoppers search an author's name (author), or a phrase (keyword). Picked for reader overlap with less competition, so clicks cost less."
         action={
           <div className="flex gap-2">
             <CopyButton text={rows.map((t) => t.target).join("\n")} label="Copy targets" />
@@ -368,6 +369,22 @@ function AdTargets({ plan }: { plan: Plan }) {
           </div>
         }
       />
+      <ol className="mb-4 grid gap-2 sm:grid-cols-4">
+        {[
+          ["Export", "Click CSV or Copy targets."],
+          ["Create a campaign", "In Amazon Ads, start a Sponsored Products campaign with manual targeting."],
+          ["Add the high ones", "Paste the high-priority targets and set a small daily budget, e.g. $5."],
+          ["Keep what sells", "After a week, keep targets that convert and add the medium ones."],
+        ].map(([t, d], i) => (
+          <li key={t} className="flex gap-2.5 rounded-xl border border-line bg-card p-3">
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent-soft font-mono text-[11px] font-semibold text-accent-ink">{i + 1}</span>
+            <span>
+              <span className="block text-[13px] font-semibold">{t}</span>
+              <span className="block text-[12.5px] leading-snug text-ink-3">{d}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
       <div className="mb-3 flex flex-wrap gap-1.5" role="group" aria-label="Filter by priority">
         {(["all", "high", "medium", "low"] as const).map((p) => (
           <button

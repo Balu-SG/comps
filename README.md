@@ -15,6 +15,16 @@ Comps is an agent that answers that question from real taste data. You give it y
 
 Every pick shows its evidence, and the full list of Qloo calls the agent made is on the page.
 
+## What's new in the interface
+
+- **Live agent timeline**: every Qloo call streams to the page as it happens (newline-delimited JSON from `/api/plan`).
+- **Taste Map**: every book and author Qloo returned, plotted by affinity and popularity, with the less-crowded sweet spot shaded.
+- **LLM alone vs. Comps with Qloo**: a plain LLM answers the same question in parallel, and its picks are scored with Qloo.
+- **Self-check**: if the agent's comps lean on crowded names, the plan goes back to it once with less-crowded alternatives.
+- **Instant replays**: three real runs recorded in `public/examples` replay in seconds.
+
+![Taste map](docs/screenshots/5-taste-map.png)
+
 ## Why it needs Qloo
 
 An LLM on its own names the same famous books for everyone. It can't tell you how much two readerships overlap, or which podcast those readers listen to. Qloo's cross-domain taste graph can, and every recommendation in Comps comes from a Qloo result.

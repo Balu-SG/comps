@@ -54,7 +54,8 @@ export function TasteMap({ candidates, plan, baseline }: { candidates: Candidate
   const x = (v: number) => M.left + ((v - xDom[0]) / (xDom[1] - xDom[0])) * (W - M.left - M.right);
   const y = (v: number) => H - M.bottom - ((v - yDom[0]) / (yDom[1] - yDom[0])) * (H - M.top - M.bottom);
   const midX = median(points.map((p) => p.popularity));
-  const midY = median(points.map((p) => p.affinity));
+  const affLo = Math.min(...points.map((p) => p.affinity));
+  const affHi = Math.max(...points.map((p) => p.affinity));
   const xTicks = ticks(xDom);
   const yTicks = ticks(yDom);
 
@@ -72,8 +73,8 @@ export function TasteMap({ candidates, plan, baseline }: { candidates: Candidate
         ? "Chosen as a comp: strong reader overlap without being the most crowded name."
         : p.status === "avoid"
           ? "Flagged to skip: too mainstream, so ads against it are crowded and costly."
-          : p.affinity >= midY && p.popularity <= midX
-            ? "In the sweet spot. Worth a look as an extra ad target."
+          : p.popularity <= midX
+            ? "In the less-crowded half. Worth a look as an extra ad target."
             : "Considered by the agent, not chosen.",
   });
 
@@ -108,8 +109,8 @@ export function TasteMap({ candidates, plan, baseline }: { candidates: Candidate
             role="img"
             aria-label={`Taste map of ${points.length} books and authors from Qloo, plotted by popularity and affinity.`}
           >
-            {/* sweet-spot quadrant: above-median fit, below-median popularity */}
-            <rect x={M.left} y={M.top} width={x(midX) - M.left} height={y(midY) - M.top} fill="var(--accent-soft)" rx={8} />
+            {/* Every point is already a strong match, so the sweet spot is the less-crowded half: popularity below the median. */}
+            <rect x={M.left} y={M.top} width={x(midX) - M.left} height={H - M.bottom - M.top} fill="var(--accent-soft)" rx={8} />
             <text x={M.left + 10} y={M.top + 18} className="fill-accent-ink text-[11px] font-semibold uppercase tracking-[0.12em]">
               Sweet spot
             </text>
@@ -138,7 +139,6 @@ export function TasteMap({ candidates, plan, baseline }: { candidates: Candidate
             ))}
             <line x1={M.left} x2={W - M.right} y1={H - M.bottom} y2={H - M.bottom} stroke="var(--line-strong)" />
             <line x1={x(midX)} x2={x(midX)} y1={M.top} y2={H - M.bottom} stroke="var(--line-strong)" strokeDasharray="4 4" />
-            <line x1={M.left} x2={W - M.right} y1={y(midY)} y2={y(midY)} stroke="var(--line-strong)" strokeDasharray="4 4" />
 
             <text x={(M.left + W - M.right) / 2} y={H - M.bottom + 38} textAnchor="middle" className="fill-[var(--ink-2)] text-[11.5px] font-medium">
               Popularity → how mainstream (and how crowded for ads)
@@ -234,6 +234,11 @@ export function TasteMap({ candidates, plan, baseline }: { candidates: Candidate
               </>
             )}
           </svg>
+
+          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-3">
+            All {points.length} dots are strong Qloo matches (affinity {affLo.toFixed(2)}–{affHi.toFixed(2)}), so the real difference is crowding. The dashed
+            line is the median popularity ({midX.toFixed(2)}): to its left, fewer authors compete for the same readers and clicks cost less.
+          </p>
 
           {hover && (
             <div

@@ -27,6 +27,7 @@ export type AgentEvent =
   | { type: "result"; id: string; count: number; ms: number; error?: string; top: string[] }
   | { type: "baseline"; guesses: BaselineGuess[] }
   | { type: "done"; result: PlanResult }
+  | { type: "check"; message: string }
   | { type: "error"; message: string };
 
 export type PlanResult = {
@@ -175,7 +176,7 @@ Work from Qloo's taste graph, not from your own memory of famous books. Work in 
 2. qloo_insights with those IDs for books, authors (person), podcasts, tv_show, movie and brand.
 3. qloo_insights for destination, using author or TV show IDs as signals (Qloo rejects book IDs there). Then call submit_plan.
 
-Every comp title, ad target, channel and region you submit must come from a Qloo result in this conversation; cite its affinity and popularity in the evidence, and copy comp titles exactly as Qloo names them. Prefer strong affinity with moderate popularity: very popular names are crowded, expensive ad targets for a new author, so list them under avoid with the reason. If the author's own book is not in Qloo, use their known comps as the signal and say so in notes. If a result is marked sample, say in notes that the plan uses sample data.
+Every comp title, ad target, channel and region you submit must come from a Qloo result in this conversation; cite its affinity and popularity in the evidence, and copy comp titles exactly as Qloo names them. Nearly everything Qloo returns is a strong match, so crowding decides: at least half of your comp titles must have popularity below the median popularity of the books Qloo returned, and high-priority ad targets should come from that less-crowded half. Very popular names are crowded, expensive ad targets for a new author, so list them under avoid with the reason. If the genre's results are all mainstream, pick the least popular strong matches and say so in notes. If the author's own book is not in Qloo, use their known comps as the signal and say so in notes. If a result is marked sample, say in notes that the plan uses sample data.
 
 Aim for 5 to 8 comp titles, 10 to 20 ad targets, 3 to 6 outside-Amazon ideas and 3 to 5 regions. Keep each "why" to one sentence.`;
 
@@ -251,6 +252,7 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
     console.log(`[comps] ${turns} turns, in ${usage.input} (+${usage.cacheRead} cached), out ${usage.output}, ~$${usd.toFixed(3)}, ${Math.round((Date.now() - started) / 1000)}s`);
   };
 
+  let revised = false;
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await client.beta.messages.create({
       model: MODEL,
@@ -273,10 +275,25 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
     const calls = response.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
     const submit = calls.find((c) => c.name === "submit_plan");
     if (submit) {
+      const plan = Plan.parse(submit.input);
+      const feedback = revised ? null : crowdingCheck(plan, [...candidates.values()]);
+      if (feedback) {
+        revised = true;
+        emit({ type: "check", message: feedback.summary });
+        messages.push({
+          role: "user",
+          content: calls.map((c) =>
+            c.id === submit.id
+              ? { type: "tool_result" as const, tool_use_id: c.id, content: feedback.instructions, is_error: true }
+              : { type: "tool_result" as const, tool_use_id: c.id, content: "Not run: submit_plan was called in the same turn.", is_error: true },
+          ),
+        });
+        continue;
+      }
       logUsage(turn + 1);
       const result: PlanResult = {
         book,
-        plan: Plan.parse(submit.input),
+        plan,
         trace,
         candidates: [...candidates.values()],
         baseline: await baselinePromise,
@@ -337,8 +354,48 @@ Books the author thinks are similar: ${book.knownComps.join("; ") || "(none)"}`,
   const guesses = response.parsed_output?.guesses.slice(0, 6) ?? [];
   return Promise.all(
     guesses.map(async (g) => {
-      const hit = (await searchEntities(`${g.title} ${g.author}`.trim(), "urn:entity:book", 1)).entities[0];
+      // Search by title alone (title + author finds nothing for some books), then prefer an exact title match.
+      const found = (await searchEntities(g.title, "urn:entity:book", 3)).entities;
+      const key = normTitle(g.title);
+      const hit = found.find((e) => normTitle(e.name) === key) ?? found.find((e) => normTitle(e.name).startsWith(key)) ?? found[0];
       return { title: g.title, author: g.author, popularity: hit?.popularity ?? null, inQloo: Boolean(hit) };
     }),
   );
+}
+
+const normTitle = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\(.*?\)/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const median = (xs: number[]) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+};
+
+// Self-check on the submitted plan: the point of Comps is affordable reach, so at least half of the comps
+// must sit on the less-crowded side of the books Qloo returned. If not, the agent gets one chance to revise.
+export function crowdingCheck(plan: Plan, candidates: Candidate[]): { summary: string; instructions: string } | null {
+  const books = candidates.filter((c) => c.kind === "book");
+  if (books.length < 6 || plan.comp_titles.length === 0) return null;
+  const mid = median(books.map((b) => b.popularity));
+  const byName = new Map(books.map((b) => [normTitle(b.name), b]));
+  const picked = plan.comp_titles.map((c) => byName.get(normTitle(c.title))).filter((b): b is Candidate => Boolean(b));
+  const quiet = picked.filter((b) => b.popularity <= mid).length;
+  const needed = Math.ceil(plan.comp_titles.length / 2);
+  if (quiet >= needed) return null;
+  const pickedIds = new Set(picked.map((b) => b.id));
+  const alternatives = books
+    .filter((b) => b.popularity <= mid && !pickedIds.has(b.id))
+    .sort((a, b) => b.affinity - a.affinity)
+    .slice(0, 10);
+  if (alternatives.length < needed - quiet) return null;
+  return {
+    summary: `Self-check: only ${quiet} of ${plan.comp_titles.length} comps are on the less-crowded side (popularity ≤ ${mid.toFixed(2)}). Revising.`,
+    instructions: `Plan rejected by the crowding check: only ${quiet} of ${plan.comp_titles.length} comp titles have popularity at or below the median of the books Qloo returned (${mid.toFixed(2)}); at least ${needed} must. Replace the most popular comps with strong, less-crowded matches from this list (name, affinity, popularity), move the replaced ones to avoid if they are crowded, keep everything else, and call submit_plan again:\n${alternatives
+      .map((b) => `- ${b.name} (affinity ${b.affinity.toFixed(2)}, popularity ${b.popularity.toFixed(2)})`)
+      .join("\n")}`,
+  };
 }

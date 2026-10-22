@@ -17,9 +17,11 @@ export type RunState = {
   baseline: BaselineGuess[] | null;
   result: PlanResult | null;
   error: string | null;
+  // Self-check verdicts, with the feed length at the time so they render in order.
+  checks: { message: string; after: number }[];
 };
 
-export const emptyRun: RunState = { feed: [], baseline: null, result: null, error: null };
+export const emptyRun: RunState = { feed: [], baseline: null, result: null, error: null, checks: [] };
 
 export function reduce(state: RunState, e: AgentEvent): RunState {
   switch (e.type) {
@@ -36,6 +38,8 @@ export function reduce(state: RunState, e: AgentEvent): RunState {
       return { ...state, baseline: e.guesses };
     case "done":
       return { ...state, result: e.result, baseline: e.result.baseline };
+    case "check":
+      return { ...state, checks: [...state.checks, { message: e.message, after: state.feed.length }] };
     case "error":
       return { ...state, error: e.message };
   }
@@ -101,5 +105,5 @@ export type RecordedLine = { t: number; e: AgentEvent };
 export const EXAMPLES = [
   { slug: "cozy-mystery", genre: "Cozy mystery", title: "The Lighthouse Ledger" },
   { slug: "space-survival", genre: "Space survival", title: "The Last Signal from Kepler" },
-  { slug: "family-secrets", genre: "Family secrets", title: "The Orchard Keeper's Daughter" },
+  { slug: "folk-horror", genre: "Folk horror", title: "The Hollowing of Bram Fell" },
 ] as const;
