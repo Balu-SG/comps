@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { buildPlan } from "@/lib/agent";
+import { runPlan, type AgentEvent } from "@/lib/agent";
 
 export const maxDuration = 300;
 
@@ -33,10 +33,20 @@ export async function POST(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Please give a title and a description of at least 20 characters." }, { status: 400 });
   }
-  try {
-    return NextResponse.json(await buildPlan(parsed.data));
-  } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : "Something went wrong." }, { status: 500 });
-  }
+  // Newline-delimited JSON: one AgentEvent per line, so the page can show each Qloo call as it happens.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const emit = (e: AgentEvent) => controller.enqueue(encoder.encode(JSON.stringify(e) + "\n"));
+      try {
+        await runPlan(parsed.data, emit);
+      } catch (err) {
+        console.error(err);
+        emit({ type: "error", message: err instanceof Error ? err.message : "Something went wrong." });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
 }

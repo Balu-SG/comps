@@ -1,19 +1,129 @@
 @import "tailwindcss";
 
+/* Design tokens. Dark values are their own steps, not an inversion. */
 :root {
-  --background: #faf7f2;
-  --foreground: #1f1d1a;
+  color-scheme: light;
+  --paper: #f7f5f0;
+  --card: #ffffff;
+  --sunk: #efece5;
+  --line: #e3dfd6;
+  --line-strong: #cfc9bc;
+  --ink: #17150f;
+  --ink-2: #4d4940;
+  --ink-3: #7a756a;
+  --accent: #2a78d6;
+  --accent-soft: #e6f0fc;
+  --accent-ink: #1c5cab;
+  --rival: #eb6834;
+  --rival-soft: #fdeee6;
+  --good: #0f7a3c;
+  --good-soft: #e5f4ea;
+  --warn: #9a5b00;
+  --warn-soft: #fbf1dc;
+  --bad: #b42828;
+  --bad-soft: #fbe9e9;
+  --dot: #b9b3a6;
+  --hero: #17150f;
+  --hero-ink: #f7f5f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --paper: #131210;
+    --card: #1c1b18;
+    --sunk: #23221e;
+    --line: #2f2d28;
+    --line-strong: #45423b;
+    --ink: #f1efe9;
+    --ink-2: #c4c0b5;
+    --ink-3: #8f8a7e;
+    --accent: #3987e5;
+    --accent-soft: #172a42;
+    --accent-ink: #8bb9f2;
+    --rival: #d95926;
+    --rival-soft: #3a2017;
+    --good: #4cc27a;
+    --good-soft: #15291d;
+    --warn: #e2a845;
+    --warn-soft: #2f2412;
+    --bad: #ec7b7b;
+    --bad-soft: #351a1a;
+    --dot: #5c584f;
+    --hero: #22201c;
+    --hero-ink: #f1efe9;
+  }
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-sunk: var(--sunk);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-rival: var(--rival);
+  --color-rival-soft: var(--rival-soft);
+  --color-good: var(--good);
+  --color-good-soft: var(--good-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-hero: var(--hero);
+  --color-hero-ink: var(--hero-ink);
+  --font-sans: var(--font-inter);
+  --font-serif: var(--font-fraunces);
   --font-mono: var(--font-geist-mono);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-inter), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.35s ease-out both;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--sunk) 25%, var(--line) 50%, var(--sunk) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise,
+  .skeleton {
+    animation: none;
+  }
 }

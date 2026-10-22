@@ -1,10 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { ENTITY_TYPES, hasQlooKey, insights, searchEntities, type QlooResult } from "./qloo";
+import { ENTITY_TYPES, hasQlooKey, insights, searchEntities, type EntityType, type QlooResult } from "./qloo";
 
 const client = new Anthropic();
 const MODEL = "claude-opus-5-5";
-const MAX_TURNS = 14;
+const MAX_TURNS = 10;
 
 export type BookInput = {
   title: string;
@@ -14,6 +15,29 @@ export type BookInput = {
 };
 
 export type TraceStep = { tool: string; input: unknown; ms: number; count: number; sample: boolean; error?: string };
+
+// A book or author Qloo returned, with the two numbers the taste map plots.
+export type Candidate = { id: string; name: string; kind: "book" | "author"; affinity: number; popularity: number };
+
+// What Claude guesses from memory alone, checked against Qloo afterwards.
+export type BaselineGuess = { title: string; author: string; popularity: number | null; inQloo: boolean };
+
+export type AgentEvent =
+  | { type: "call"; id: string; tool: string; input: unknown }
+  | { type: "result"; id: string; count: number; ms: number; error?: string; top: string[] }
+  | { type: "baseline"; guesses: BaselineGuess[] }
+  | { type: "done"; result: PlanResult }
+  | { type: "error"; message: string };
+
+export type PlanResult = {
+  book: BookInput;
+  plan: Plan;
+  trace: TraceStep[];
+  candidates: Candidate[];
+  baseline: BaselineGuess[];
+  sample: boolean;
+  seconds: number;
+};
 
 const Plan = z.object({
   pitch_line: z.string(),
@@ -55,7 +79,7 @@ const tools: Anthropic.Beta.BetaTool[] = [
   {
     name: "qloo_insights",
     description:
-      "Ask Qloo's taste graph what people who like the signal entities also like, within one entity type. Books and authors give comp titles; podcasts, tv_show, movie and brand give reader channels outside Amazon; destination gives places where these readers over-index. Results carry affinity (fit) and popularity (how mainstream; very high popularity means expensive, crowded ad targets).",
+      "Ask Qloo's taste graph what people who like the signal entities also like, within one entity type. Books and authors give comp titles; podcasts, tv_show, movie and brand give reader channels outside Amazon; destination gives places where these readers over-index. Destination only accepts author (urn:entity:person), tv_show, movie or podcast IDs as signals, never book IDs. Results carry affinity (fit) and popularity (how mainstream; very high popularity means expensive, crowded ad targets).",
     strict: true,
     input_schema: {
       type: "object",
@@ -85,7 +109,7 @@ const tools: Anthropic.Beta.BetaTool[] = [
             additionalProperties: false,
             required: ["title", "author", "why", "evidence", "warning"],
             properties: {
-              title: { type: "string" },
+              title: { type: "string", description: "Exactly as Qloo named it." },
               author: { type: "string", description: "Empty string if Qloo did not give one." },
               why: { type: "string" },
               evidence: { type: "string", description: "The Qloo numbers behind the pick, e.g. affinity 0.88, popularity 0.37." },
@@ -146,28 +170,71 @@ const tools: Anthropic.Beta.BetaTool[] = [
 
 const SYSTEM = `You help self-published authors find their real readers and spend their Amazon Ads budget well.
 
-Work from Qloo's taste graph, not from your own memory of famous books. Start by resolving the author's book and their known comps with qloo_search, then use qloo_insights to find books and authors with real reader overlap, then the podcasts, TV shows, films and brands those readers like, then the destinations where they over-index. Make independent calls in parallel.
+Work from Qloo's taste graph, not from your own memory of famous books. Work in three rounds and make every call within a round in parallel:
+1. qloo_search for the author's book, each known comp, and the authors of those comps (urn:entity:person).
+2. qloo_insights with those IDs for books, authors (person), podcasts, tv_show, movie and brand.
+3. qloo_insights for destination, using author or TV show IDs as signals (Qloo rejects book IDs there). Then call submit_plan.
 
-Every comp title, ad target, channel and region you submit must come from a Qloo result in this conversation; cite its affinity and popularity in the evidence. Prefer strong affinity with moderate popularity: very popular names are crowded, expensive ad targets for a new author, so list them under avoid with the reason. If the author's own book is not in Qloo, use their known comps as the signal and say so in notes. If a result is marked sample, say in notes that the plan uses sample data.
+Every comp title, ad target, channel and region you submit must come from a Qloo result in this conversation; cite its affinity and popularity in the evidence, and copy comp titles exactly as Qloo names them. Prefer strong affinity with moderate popularity: very popular names are crowded, expensive ad targets for a new author, so list them under avoid with the reason. If the author's own book is not in Qloo, use their known comps as the signal and say so in notes. If a result is marked sample, say in notes that the plan uses sample data.
 
-Aim for 5 to 8 comp titles, 10 to 20 ad targets, 3 to 6 outside-Amazon ideas and 3 to 5 regions. Finish by calling submit_plan.`;
+Aim for 5 to 8 comp titles, 10 to 20 ad targets, 3 to 6 outside-Amazon ideas and 3 to 5 regions. Keep each "why" to one sentence.`;
 
-async function runTool(name: string, input: unknown): Promise<QlooResult> {
-  if (name === "qloo_search") {
-    const i = z.object({ query: z.string(), type: z.enum(ENTITY_TYPES) }).parse(input);
-    return searchEntities(i.query, i.type);
-  }
-  if (name === "qloo_insights") {
-    const i = z
-      .object({ filter_type: z.enum(ENTITY_TYPES), signal_entity_ids: z.array(z.string()).min(1), take: z.number().int() })
-      .parse(input);
-    return insights({ filterType: i.filter_type, signalEntityIds: i.signal_entity_ids, take: Math.min(Math.max(i.take, 1), 20) });
-  }
-  throw new Error(`Unknown tool ${name}`);
-}
+const DESTINATION_SIGNALS = new Set<EntityType>(["urn:entity:person", "urn:entity:tv_show", "urn:entity:movie", "urn:entity:podcast"]);
 
-export async function buildPlan(book: BookInput): Promise<{ plan: Plan; trace: TraceStep[]; sample: boolean }> {
+export async function runPlan(book: BookInput, emit: (e: AgentEvent) => void): Promise<PlanResult> {
+  const started = Date.now();
   const trace: TraceStep[] = [];
+  const idType = new Map<string, EntityType>();
+  const candidates = new Map<string, Candidate>();
+
+  function remember(type: EntityType, result: QlooResult) {
+    for (const e of result.entities) {
+      if (!e.id) continue;
+      idType.set(e.id, type);
+      const kind = type === "urn:entity:book" ? "book" : type === "urn:entity:person" ? "author" : null;
+      if (!kind || e.affinity == null || e.popularity == null) continue;
+      const prev = candidates.get(e.id);
+      if (!prev || prev.affinity < e.affinity) {
+        candidates.set(e.id, { id: e.id, name: e.name, kind, affinity: e.affinity, popularity: e.popularity });
+      }
+    }
+  }
+
+  async function runTool(name: string, input: unknown): Promise<QlooResult> {
+    if (name === "qloo_search") {
+      const i = z.object({ query: z.string(), type: z.enum(ENTITY_TYPES) }).parse(input);
+      const r = await searchEntities(i.query, i.type);
+      remember(i.type, r);
+      return r;
+    }
+    if (name === "qloo_insights") {
+      const i = z
+        .object({ filter_type: z.enum(ENTITY_TYPES), signal_entity_ids: z.array(z.string()).min(1), take: z.number().int() })
+        .parse(input);
+      let ids = i.signal_entity_ids;
+      if (i.filter_type === "urn:entity:destination") {
+        ids = ids.filter((id) => !idType.has(id) || DESTINATION_SIGNALS.has(idType.get(id)!));
+        if (ids.length === 0) {
+          throw new Error("Destination needs author (urn:entity:person), tv_show, movie or podcast IDs as signals, not book IDs.");
+        }
+      }
+      const r = await insights({ filterType: i.filter_type, signalEntityIds: ids, take: Math.min(Math.max(i.take, 1), 20) });
+      remember(i.filter_type, r);
+      return r;
+    }
+    throw new Error(`Unknown tool ${name}`);
+  }
+
+  const baselinePromise = guessWithoutQloo(book)
+    .then((guesses) => {
+      emit({ type: "baseline", guesses });
+      return guesses;
+    })
+    .catch((err) => {
+      console.error("[comps] baseline failed", err);
+      return [] as BaselineGuess[];
+    });
+
   const messages: Anthropic.Beta.BetaMessageParam[] = [
     {
       role: "user",
@@ -181,7 +248,7 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
   const usage = { input: 0, output: 0, cacheRead: 0 };
   const logUsage = (turns: number) => {
     const usd = (usage.input * 4 + usage.cacheRead * 0.2 + usage.output * 20) / 1e6;
-    console.log(`[comps] ${turns} turns, in ${usage.input} (+${usage.cacheRead} cached), out ${usage.output}, ~$${usd.toFixed(3)}`);
+    console.log(`[comps] ${turns} turns, in ${usage.input} (+${usage.cacheRead} cached), out ${usage.output}, ~$${usd.toFixed(3)}, ${Math.round((Date.now() - started) / 1000)}s`);
   };
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -189,7 +256,7 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
       model: MODEL,
       max_tokens: 16000,
       thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
+      output_config: { effort: "low" },
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
       system: SYSTEM,
@@ -207,7 +274,17 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
     const submit = calls.find((c) => c.name === "submit_plan");
     if (submit) {
       logUsage(turn + 1);
-      return { plan: Plan.parse(submit.input), trace, sample: !hasQlooKey() };
+      const result: PlanResult = {
+        book,
+        plan: Plan.parse(submit.input),
+        trace,
+        candidates: [...candidates.values()],
+        baseline: await baselinePromise,
+        sample: !hasQlooKey(),
+        seconds: Math.round((Date.now() - started) / 1000),
+      };
+      emit({ type: "done", result });
+      return result;
     }
     if (calls.length === 0) {
       messages.push({ role: "user", content: "Please finish by calling submit_plan with the plan." });
@@ -216,14 +293,19 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
 
     const results = await Promise.all(
       calls.map(async (call): Promise<Anthropic.Beta.BetaToolResultBlockParam> => {
-        const started = Date.now();
+        const t0 = Date.now();
+        emit({ type: "call", id: call.id, tool: call.name, input: call.input });
         try {
           const result = await runTool(call.name, call.input);
-          trace.push({ tool: call.name, input: call.input, ms: Date.now() - started, count: result.entities.length, sample: result.sample });
+          const ms = Date.now() - t0;
+          trace.push({ tool: call.name, input: call.input, ms, count: result.entities.length, sample: result.sample });
+          emit({ type: "result", id: call.id, count: result.entities.length, ms, top: result.entities.slice(0, 3).map((e) => e.name) });
           return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify({ sample: result.sample, entities: result.entities }) };
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          trace.push({ tool: call.name, input: call.input, ms: Date.now() - started, count: 0, sample: false, error: message });
+          const ms = Date.now() - t0;
+          trace.push({ tool: call.name, input: call.input, ms, count: 0, sample: false, error: message });
+          emit({ type: "result", id: call.id, count: 0, ms, error: message, top: [] });
           return { type: "tool_result", tool_use_id: call.id, content: message, is_error: true };
         }
       }),
@@ -231,4 +313,32 @@ Books the author thinks are similar: ${book.knownComps.length ? book.knownComps.
     messages.push({ role: "user", content: results });
   }
   throw new Error("The agent did not finish in time. Try again with a shorter description.");
+}
+
+const Guesses = z.object({ guesses: z.array(z.object({ title: z.string(), author: z.string() })) });
+
+// The control group: what an LLM suggests with no taste data. Shown next to the Qloo picks.
+async function guessWithoutQloo(book: BookInput): Promise<BaselineGuess[]> {
+  const response = await client.messages.parse({
+    model: MODEL,
+    max_tokens: 4000,
+    output_config: { effort: "low", format: zodOutputFormat(Guesses) },
+    messages: [
+      {
+        role: "user",
+        content: `Suggest 6 comparable titles (comps) a self-published author could use for this book in Amazon Ads. Answer from your own knowledge.
+
+Title: ${book.title}
+Description: ${book.description}
+Books the author thinks are similar: ${book.knownComps.join("; ") || "(none)"}`,
+      },
+    ],
+  });
+  const guesses = response.parsed_output?.guesses.slice(0, 6) ?? [];
+  return Promise.all(
+    guesses.map(async (g) => {
+      const hit = (await searchEntities(`${g.title} ${g.author}`.trim(), "urn:entity:book", 1)).entities[0];
+      return { title: g.title, author: g.author, popularity: hit?.popularity ?? null, inQloo: Boolean(hit) };
+    }),
+  );
 }

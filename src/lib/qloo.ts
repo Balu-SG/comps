@@ -30,11 +30,33 @@ export type EntityType = (typeof ENTITY_TYPES)[number];
 const cache = new Map<string, { at: number; value: QlooResult }>();
 const CACHE_MS = 6 * 60 * 60 * 1000;
 
+// The hackathon key is rate limited: cap concurrent requests and back off on 429.
+const MAX_CONCURRENT = 3;
+let active = 0;
+const waiting: (() => void)[] = [];
+
+async function slot<T>(work: () => Promise<T>): Promise<T> {
+  if (active >= MAX_CONCURRENT) await new Promise<void>((resolve) => waiting.push(resolve));
+  active++;
+  try {
+    return await work();
+  } finally {
+    active--;
+    waiting.shift()?.();
+  }
+}
+
 async function get(path: string, params: Record<string, string>): Promise<unknown> {
   const url = `${BASE_URL}${path}?${new URLSearchParams(params)}`;
-  const res = await fetch(url, { headers: { "X-Api-Key": process.env.QLOO_API_KEY! } });
-  if (!res.ok) throw new Error(`Qloo ${path} ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  return res.json();
+  for (let attempt = 0; ; attempt++) {
+    const res = await slot(() => fetch(url, { headers: { "X-Api-Key": process.env.QLOO_API_KEY! } }));
+    if (res.status === 429 && attempt < 4) {
+      await new Promise((r) => setTimeout(r, 700 * 2 ** attempt + Math.random() * 300));
+      continue;
+    }
+    if (!res.ok) throw new Error(`Qloo ${path} ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return res.json();
+  }
 }
 
 async function cached(key: string, load: () => Promise<QlooResult>): Promise<QlooResult> {
